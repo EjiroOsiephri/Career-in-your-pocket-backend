@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+
+node_modules/
+
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+venv/
+.env
+
+# Django migrations
+*/migrations/*.py
+*/migrations/*.pyc
+
+# Database
+*.sqlite3
+db.sqlite3
+
+# Docker
+*.log
+*.pid
+*.sock
+__MACOSX
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
