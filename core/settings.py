@@ -16,6 +16,10 @@ DEBUG = os.getenv("DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
+
+AUTH_USER_MODEL = "users.CustomUser"
+
+
 # Installed apps
 INSTALLED_APPS = [
     "corsheaders",  # ✅ Allow CORS requests
