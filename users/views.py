@@ -4,15 +4,85 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
 from .serializers import UserSerializer
 from django.http import JsonResponse
+import requests
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+import os
+from .models import CareerAdviceHistory
+from .serializers import CareerAdviceHistorySerializer
+
 import logging
 
 User = get_user_model()
+
 logger = logging.getLogger(__name__)
 
 def welcome_view(request):
     return JsonResponse({"message": "Welcome to the Django API!"})
 
-# Signup with token response & logging
+
+class CareerAdviceView(APIView):
+    permission_classes = [IsAuthenticated] 
+
+
+    def post(self, request):
+        user_input = request.data.get("input", "")
+
+        if not user_input:
+            return Response({"error": "Input is required"}, status=400)
+
+        # Call DeepSeek API
+        response = self.get_deepseek_response(user_input)
+
+        if "error" in response:
+            return Response(response, status=500)
+
+    
+        CareerAdviceHistory.objects.create(
+            user=request.user, query=user_input, response=response
+        )
+
+        return Response({"career_advice": response}, status=200)
+
+    def get_deepseek_response(self, user_input):
+        """
+        Call DeepSeek API to generate career advice.
+        """
+        API_KEY = os.getenv("DEEPSEEK_API_KEY") 
+        API_URL = "https://api.deepseek.com/generate"
+
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "You are a career assistant. Generate structured career roadmaps."},
+                {"role": "user", "content": f"Give me a career roadmap for {user_input} in the format:\n1. Career Title\n📌 Description: [Summary]\n🗺 Career Roadmap:\n✅ Step 1\n✅ Step 2\n✅ Step 3"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+
+        try:
+            response = requests.post(API_URL, headers=headers, json=payload)
+            response_data = response.json()
+            return response_data.get("choices", [{}])[0].get("message", {}).get("content", "No response generated")
+        except Exception as e:
+            return {"error": str(e)}    
+
+
+
+class CareerHistoryView(generics.ListAPIView):
+    serializer_class = CareerAdviceHistorySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return CareerAdviceHistory.objects.filter(user=self.request.user).order_by("-created_at")
+
+
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer

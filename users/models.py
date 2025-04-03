@@ -1,5 +1,16 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
+from django.conf import settings
+
+
+class CareerAdviceHistory(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)  # Link to authenticated user
+    query = models.TextField()  # What the user searched for
+    response = models.TextField()  # AI-generated response
+    created_at = models.DateTimeField(auto_now_add=True)  # Timestamp
+
+    def __str__(self):
+        return f"{self.user.email} - {self.query[:50]}" 
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, password=None, **extra_fields):
