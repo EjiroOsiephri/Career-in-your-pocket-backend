@@ -20,8 +20,7 @@ from users.views import welcome_view
 
 urlpatterns = [
     path("", welcome_view),
-    path('admin/', admin.site.urls),
-     path("auth/", include("users.urls")),
+    path("admin/", admin.site.urls),
+    path("auth/", include("users.urls")),
 ]
-
 

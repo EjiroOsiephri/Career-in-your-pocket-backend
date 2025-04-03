@@ -7,8 +7,7 @@ class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
 
     def create(self, validated_data):
-        user = User.objects.create_user(**validated_data)
-        return user
+        return User.objects.create_user(**validated_data)
 
     class Meta:
         model = User

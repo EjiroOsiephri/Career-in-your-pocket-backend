@@ -7,8 +7,6 @@ from django.http import JsonResponse
 
 User = get_user_model()
 
-
-
 def welcome_view(request):
     return JsonResponse({"message": "Welcome to the Django API!"})
 
@@ -16,6 +14,10 @@ def welcome_view(request):
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
+
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        return Response({"message": "User created successfully", "user": response.data}, status=201)
 
 # Get Profile
 class ProfileView(generics.RetrieveUpdateDestroyAPIView):
@@ -38,3 +40,11 @@ class LogoutView(generics.GenericAPIView):
         except:
             return Response({"error": "Invalid token"}, status=400)
 
+
+class DeleteAccountView(generics.DestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        user = request.user
+        user.delete()
+        return Response({"message": "Account deleted successfully"}, status=200)
