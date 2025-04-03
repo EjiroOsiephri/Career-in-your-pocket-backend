@@ -1,16 +1,16 @@
+"use client";
+
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
-from .serializers import UserSerializer
+from .serializers import UserSerializer, CareerAdviceHistorySerializer
 from django.http import JsonResponse
 import requests
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 import os
 from .models import CareerAdviceHistory
-from .serializers import CareerAdviceHistorySerializer
-
 import logging
 
 User = get_user_model()
@@ -20,10 +20,8 @@ logger = logging.getLogger(__name__)
 def welcome_view(request):
     return JsonResponse({"message": "Welcome to the Django API!"})
 
-
 class CareerAdviceView(APIView):
-    permission_classes = [IsAuthenticated] 
-
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user_input = request.data.get("input", "")
@@ -34,10 +32,11 @@ class CareerAdviceView(APIView):
         # Call DeepSeek API
         response = self.get_deepseek_response(user_input)
 
+        logger.debug(f"DeepSeek API Response: {response}")
+
         if "error" in response:
             return Response(response, status=500)
 
-    
         CareerAdviceHistory.objects.create(
             user=request.user, query=user_input, response=response
         )
@@ -48,8 +47,12 @@ class CareerAdviceView(APIView):
         """
         Call DeepSeek API to generate career advice.
         """
-        API_KEY = os.getenv("DEEPSEEK_API_KEY") 
-        API_URL = "https://api.deepseek.com/generate"
+        API_KEY = os.getenv("DEEPSEEK_API_KEY")
+        API_URL = "https://api.deepseek.com/v1/chat/completions"  # Updated to a more likely correct endpoint
+
+        if not API_KEY:
+            logger.error("DeepSeek API key is not set in environment variables")
+            return {"error": "API key not configured"}
 
         headers = {
             "Authorization": f"Bearer {API_KEY}",
@@ -67,13 +70,26 @@ class CareerAdviceView(APIView):
         }
 
         try:
+            logger.debug(f"Sending request to DeepSeek API: URL={API_URL}, Payload={payload}")
             response = requests.post(API_URL, headers=headers, json=payload)
+            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx, 5xx)
             response_data = response.json()
-            return response_data.get("choices", [{}])[0].get("message", {}).get("content", "No response generated")
-        except Exception as e:
-            return {"error": str(e)}    
+            logger.debug(f"Raw DeepSeek API Response: {response_data}")
 
+            # Check the actual structure of the response
+            if "choices" not in response_data or not response_data["choices"]:
+                logger.error(f"Unexpected response structure: {response_data}")
+                return "No valid choices in response"
 
+            content = response_data["choices"][0].get("message", {}).get("content", "No response generated")
+            return content if content else "No content in response"
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"DeepSeek API request failed: {str(e)}")
+            return {"error": f"API request failed: {str(e)}"}
+        except ValueError as e:
+            logger.error(f"Failed to parse DeepSeek API response: {str(e)}")
+            return {"error": "Invalid response format from API"}
 
 class CareerHistoryView(generics.ListAPIView):
     serializer_class = CareerAdviceHistorySerializer
@@ -81,7 +97,6 @@ class CareerHistoryView(generics.ListAPIView):
 
     def get_queryset(self):
         return CareerAdviceHistory.objects.filter(user=self.request.user).order_by("-created_at")
-
 
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -104,7 +119,6 @@ class SignupView(generics.CreateAPIView):
             status=201
         )
 
-# Login - No token, just checking if user exists & logging
 class LoginView(generics.GenericAPIView):
     def post(self, request):
         email = request.data.get("email")
@@ -118,7 +132,6 @@ class LoginView(generics.GenericAPIView):
             logger.warning(f"Failed login attempt for email: {email}")
             return Response({"error": "Invalid credentials"}, status=400)
 
-# Get Profile
 class ProfileView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
@@ -126,7 +139,6 @@ class ProfileView(generics.RetrieveUpdateDestroyAPIView):
     def get_object(self):
         return self.request.user
 
-# Logout
 class LogoutView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -137,12 +149,10 @@ class LogoutView(generics.GenericAPIView):
             token.blacklist()
             
             logger.info(f"User logged out: {request.user.email}")
-
             return Response({"message": "Logged out successfully"}, status=200)
         except:
             return Response({"error": "Invalid token"}, status=400)
 
-# Delete Account
 class DeleteAccountView(generics.DestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
