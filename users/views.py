@@ -12,6 +12,9 @@ from rest_framework.permissions import IsAuthenticated
 import os
 from .models import CareerAdviceHistory
 import logging
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
 
 User = get_user_model()
 
@@ -98,6 +101,8 @@ class CareerHistoryView(generics.ListAPIView):
     def get_queryset(self):
         return CareerAdviceHistory.objects.filter(user=self.request.user).order_by("-created_at")
 
+
+
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
@@ -106,9 +111,31 @@ class SignupView(generics.CreateAPIView):
         response = super().create(request, *args, **kwargs)
         user = User.objects.get(email=response.data["email"])
         refresh = RefreshToken.for_user(user)
-        
+
+        # Send Welcome Email
+        subject = "Welcome to Pocket Career 🎉"
+        html_message = render_to_string("welcome_email.html", {
+            "first_name": user.first_name,
+            "email": user.email,
+            "token": str(refresh.access_token),
+        })
+        plain_message = strip_tags(html_message)
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                os.getenv("DEFAULT_FROM_EMAIL"),
+                [user.email],
+                html_message=html_message,
+                fail_silently=False
+            )
+            logger.info(f"Welcome email sent to {user.email}")
+        except Exception as e:
+            logger.error(f"Email sending failed: {str(e)}")
+
         logger.info(f"User signed up: {user.email}")
-        
+
         return Response(
             {
                 "message": "User created successfully",
@@ -118,6 +145,8 @@ class SignupView(generics.CreateAPIView):
             },
             status=201
         )
+
+
 
 class LoginView(generics.GenericAPIView):
     def post(self, request):
