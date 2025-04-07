@@ -12,6 +12,9 @@ from rest_framework.permissions import IsAuthenticated
 import os
 from .models import CareerAdviceHistory
 import logging
+from google.auth.transport import requests as google_requests
+from rest_framework_simplejwt.tokens import RefreshToken
+from google.oauth2 import id_token
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
@@ -146,6 +149,49 @@ class SignupView(generics.CreateAPIView):
             status=201
         )
 
+class GoogleLoginView(APIView):
+    def post(self, request):
+        token_id = request.data.get("id_token")
+        if not token_id:
+            return Response({"error": "Token not provided"}, status=400)
+
+        try:
+            # Verify token using Google's public keys
+            id_info = id_token.verify_oauth2_token(
+                token_id,
+                google_requests.Request(),
+                audience=os.getenv("GOOGLE_CLIENT_ID")  # Make sure this is set
+            )
+
+            email = id_info["email"]
+            first_name = id_info.get("given_name", "")
+            last_name = id_info.get("family_name", "")
+
+            user, created = User.objects.get_or_create(email=email, defaults={
+                "first_name": first_name,
+                "last_name": last_name,
+                "username": email.split("@")[0],  # just in case
+                "is_active": True
+            })
+
+            refresh = RefreshToken.for_user(user)
+
+            logger.info(f"{'Created' if created else 'Logged in'} user via Google: {user.email}")
+
+            return Response({
+                "message": "Login successful",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": {
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name
+                }
+            })
+
+        except ValueError as e:
+            logger.error(f"Google token verification failed: {str(e)}")
+            return Response({"error": "Invalid token"}, status=400)
 
 
 class LoginView(generics.GenericAPIView):

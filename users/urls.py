@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import SignupView, ProfileView, LogoutView, DeleteAccountView, CareerAdviceView, CareerHistoryView
+from .views import SignupView, ProfileView, LogoutView, DeleteAccountView, CareerAdviceView, CareerHistoryView,GoogleLoginView
 
 urlpatterns = [
     path("signup/", SignupView.as_view(), name="signup"),
@@ -11,4 +11,5 @@ urlpatterns = [
     path("delete-account/", DeleteAccountView.as_view(), name="delete_account"),
     path("career-advice/", CareerAdviceView.as_view(), name="career-advice"),
     path("career-history/", CareerHistoryView.as_view(), name="career-history"),
+    path("google/", GoogleLoginView.as_view(), name="google-login"),
 ]
