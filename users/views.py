@@ -1,6 +1,6 @@
-"use client";
 
-from rest_framework import generics, permissions
+
+from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
@@ -18,6 +18,7 @@ from google.oauth2 import id_token
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+
 
 User = get_user_model()
 
@@ -151,47 +152,51 @@ class SignupView(generics.CreateAPIView):
 
 class GoogleLoginView(APIView):
     def post(self, request):
-        token_id = request.data.get("id_token")
-        if not token_id:
-            return Response({"error": "Token not provided"}, status=400)
+        access_token = request.data.get("access_token")
+
+        if not access_token:
+            return Response({"error": "Access token not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Verify token using Google's public keys
-            id_info = id_token.verify_oauth2_token(
-                token_id,
-                google_requests.Request(),
-                audience=os.getenv("GOOGLE_CLIENT_ID")  # Make sure this is set
-            )
+            # Send a request to Google's User Info endpoint
+            user_info_url = "https://www.googleapis.com/oauth2/v1/userinfo"
+            headers = {"Authorization": f"Bearer {access_token}"}
+            response = requests.get(user_info_url, headers=headers)
 
-            email = id_info["email"]
-            first_name = id_info.get("given_name", "")
-            last_name = id_info.get("family_name", "")
+            # If the response is successful (status code 200)
+            if response.status_code == 200:
+                user_data = response.json()
 
-            user, created = User.objects.get_or_create(email=email, defaults={
-                "first_name": first_name,
-                "last_name": last_name,
-                "username": email.split("@")[0],  # just in case
-                "is_active": True
-            })
+                # Get the user's email and other info
+                email = user_data["email"]
+                first_name = user_data.get("given_name", "")
+                last_name = user_data.get("family_name", "")
 
-            refresh = RefreshToken.for_user(user)
+                # Check if the user exists, otherwise create a new one
+                user, created = User.objects.get_or_create(
+                    email=email,
+                    defaults={"first_name": first_name, "last_name": last_name}
+                )
 
-            logger.info(f"{'Created' if created else 'Logged in'} user via Google: {user.email}")
+                # Generate JWT token using simplejwt
+                refresh = RefreshToken.for_user(user)
 
-            return Response({
-                "message": "Login successful",
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "user": {
-                    "email": user.email,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name
-                }
-            })
+                return Response({
+                    "message": "Login successful",
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "user": {
+                        "email": user.email,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name
+                    }
+                })
 
-        except ValueError as e:
-            logger.error(f"Google token verification failed: {str(e)}")
-            return Response({"error": "Invalid token"}, status=400)
+            else:
+                return Response({"error": "Failed to fetch user info from Google"}, status=status.HTTP_400_BAD_REQUEST)
+
+        except requests.exceptions.RequestException as e:
+            return Response({"error": f"Error communicating with Google: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LoginView(generics.GenericAPIView):
