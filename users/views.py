@@ -27,38 +27,72 @@ logger = logging.getLogger(__name__)
 def welcome_view(request):
     return JsonResponse({"message": "Welcome to the Django API!"})
 
+
+
+import os
+import re
+import requests
+from urllib.parse import urlparse, parse_qs
+
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from .models import CareerAdviceHistory
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 class CareerAdviceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user_input = request.data.get("input", "")
+        dropdowns = request.data.get("dropdowns", {})
 
-        if not user_input:
-            return Response({"error": "Input is required"}, status=400)
+        if not user_input and not dropdowns:
+            return Response({"error": "Input or dropdowns are required"}, status=400)
 
-        # Call DeepSeek API
-        response = self.get_deepseek_response(user_input)
-
-        logger.debug(f"DeepSeek API Response: {response}")
-
-        if "error" in response:
-            return Response(response, status=500)
-
-        CareerAdviceHistory.objects.create(
-            user=request.user, query=user_input, response=response
+        dropdown_string = "\n".join(
+            [f"{key.replace('_', ' ').title()}: {value}" for key, value in dropdowns.items()]
         )
 
-        return Response({"career_advice": response}, status=200)
+        full_prompt = f"{dropdown_string}\n\nUser Input: {user_input}\n\nPlease provide a career roadmap and recommend 2–3 relevant YouTube courses with links."
+
+        # Call DeepSeek API
+        response = self.get_deepseek_response(full_prompt)
+        logger.debug(f"DeepSeek API Response: {response}")
+
+        if isinstance(response, dict) and "error" in response:
+            return Response(response, status=500)
+
+        # Extract YouTube links and generate thumbnails
+        youtube_links = self.extract_youtube_links(response)
+        youtube_courses = [
+            {
+                "url": link,
+                "thumbnail": self.get_youtube_thumbnail(link)
+            }
+            for link in youtube_links
+        ]
+
+        # Save query and response
+        CareerAdviceHistory.objects.create(
+            user=request.user, query=full_prompt, response=response
+        )
+
+        return Response({
+            "career_advice": response,
+            "recommended_courses": youtube_courses
+        }, status=200)
 
     def get_deepseek_response(self, user_input):
-        """
-        Call DeepSeek API to generate career advice.
-        """
         API_KEY = os.getenv("DEEPSEEK_API_KEY")
-        API_URL = "https://api.deepseek.com/v1/chat/completions"  # Updated to a more likely correct endpoint
+        API_URL = "https://api.deepseek.com/v1/chat/completions"
 
         if not API_KEY:
-            logger.error("DeepSeek API key is not set in environment variables")
+            logger.error("DeepSeek API key is not set")
             return {"error": "API key not configured"}
 
         headers = {
@@ -69,34 +103,63 @@ class CareerAdviceView(APIView):
         payload = {
             "model": "deepseek-chat",
             "messages": [
-                {"role": "system", "content": "You are a career assistant. Generate structured career roadmaps."},
-                {"role": "user", "content": f"Give me a career roadmap for {user_input} in the format:\n1. Career Title\n📌 Description: [Summary]\n🗺 Career Roadmap:\n✅ Step 1\n✅ Step 2\n✅ Step 3"}
+                {
+                    "role": "system",
+                    "content": "You are a career assistant. Generate structured career roadmaps based on the user's background and goals."
+                },
+                {
+                    "role": "user",
+                    "content": f"{user_input}\n\nFormat:\n1. Career Title\n📌 Description: [Summary]\n🗺 Career Roadmap:\n✅ Step 1\n✅ Step 2\n✅ Step 3\n📚 Recommended YouTube Courses (with links):"
+                }
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": 1500
         }
 
         try:
-            logger.debug(f"Sending request to DeepSeek API: URL={API_URL}, Payload={payload}")
+            logger.debug(f"Sending request to DeepSeek API")
             response = requests.post(API_URL, headers=headers, json=payload)
-            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx, 5xx)
-            response_data = response.json()
-            logger.debug(f"Raw DeepSeek API Response: {response_data}")
+            response.raise_for_status()
+            data = response.json()
+            logger.debug(f"DeepSeek raw response: {data}")
 
-            # Check the actual structure of the response
-            if "choices" not in response_data or not response_data["choices"]:
-                logger.error(f"Unexpected response structure: {response_data}")
-                return "No valid choices in response"
+            if "choices" not in data or not data["choices"]:
+                logger.error("No valid choices in DeepSeek response")
+                return {"error": "No valid choices returned by DeepSeek"}
 
-            content = response_data["choices"][0].get("message", {}).get("content", "No response generated")
-            return content if content else "No content in response"
+            content = data["choices"][0].get("message", {}).get("content", "No response generated")
+            return content or "No content in response"
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"DeepSeek API request failed: {str(e)}")
+            logger.error(f"DeepSeek request failed: {str(e)}")
             return {"error": f"API request failed: {str(e)}"}
         except ValueError as e:
-            logger.error(f"Failed to parse DeepSeek API response: {str(e)}")
+            logger.error(f"DeepSeek response parse failed: {str(e)}")
             return {"error": "Invalid response format from API"}
+
+    def extract_youtube_links(self, text):
+        """
+        Extract all YouTube links from the response text.
+        """
+        youtube_regex = r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[^\s\)\]]+)'
+        return re.findall(youtube_regex, text)
+
+    def get_youtube_thumbnail(self, video_url):
+        """
+        Generate thumbnail URL for a given YouTube video.
+        """
+        parsed_url = urlparse(video_url)
+        video_id = parse_qs(parsed_url.query).get('v')
+
+        if video_id:
+            video_id = video_id[0]
+        else:
+            # Handle youtu.be short URLs
+            video_id = parsed_url.path.strip("/")
+
+        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+
 
 class CareerHistoryView(generics.ListAPIView):
     serializer_class = CareerAdviceHistorySerializer
@@ -231,9 +294,6 @@ class LogoutView(generics.GenericAPIView):
 
     def post(self, request):
         try:
-            refresh_token = request.data["refresh"]
-            token = RefreshToken(refresh_token)
-            token.blacklist()
             
             logger.info(f"User logged out: {request.user.email}")
             return Response({"message": "Logged out successfully"}, status=200)
