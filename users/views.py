@@ -1,5 +1,3 @@
-
-
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -13,9 +11,18 @@ import os
 from .models import CareerAdviceHistory
 import logging
 from google.auth.transport import requests as google_requests
+from django.db import transaction
 from rest_framework_simplejwt.tokens import RefreshToken
 from google.oauth2 import id_token
 from django.core.mail import send_mail
+
+import requests
+from urllib.parse import urlparse, parse_qs
+
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+import logging
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 
@@ -28,69 +35,91 @@ def welcome_view(request):
     return JsonResponse({"message": "Welcome to the Django API!"})
 
 
-
-import os
-import re
-import requests
-from urllib.parse import urlparse, parse_qs
-
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-
-from .models import CareerAdviceHistory
-import logging
-
-logger = logging.getLogger(__name__)
-
-
 class CareerAdviceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        user_input = request.data.get("input", "")
-        dropdowns = request.data.get("dropdowns", {})
+        try:
+            user_input = request.data.get("input", "")
+            dropdowns = request.data.get("dropdowns", {})
+            logger.info(f"Received input: {user_input}")
+            logger.info(f"Received dropdowns: {dropdowns}")
 
-        if not user_input and not dropdowns:
-            return Response({"error": "Input or dropdowns are required"}, status=400)
+            if not user_input and not dropdowns:
+                return Response({"error": "Input or dropdowns are required"}, status=400)
 
-        dropdown_string = "\n".join(
-            [f"{key.replace('_', ' ').title()}: {value}" for key, value in dropdowns.items()]
-        )
+            # Improved prompt with more explicit formatting instructions
+            full_prompt = f"""
+User Request: {user_input}
+Dropdown Selections: {dropdowns}
 
-        full_prompt = f"{dropdown_string}\n\nUser Input: {user_input}\n\nPlease provide a career roadmap and recommend 2–3 relevant YouTube courses with links."
+Please provide detailed career advice in this EXACT format:
 
-        # Call DeepSeek API
-        response = self.get_deepseek_response(full_prompt)
-        logger.debug(f"DeepSeek API Response: {response}")
+**Career Title:** [Job Title Here]
 
-        if isinstance(response, dict) and "error" in response:
-            return Response(response, status=500)
+📌 **Description:** 
+[Detailed 2-3 paragraph description of this career path]
 
-        # Extract YouTube links and generate thumbnails
-        youtube_links = self.extract_youtube_links(response)
-        youtube_courses = [
-            {
-                "url": link,
-                "thumbnail": self.get_youtube_thumbnail(link)
+🗺 **Career Roadmap:**
+✅ **Step 1:** [Step description]
+✅ **Step 2:** [Step description] 
+✅ **Step 3:** [Step description]
+
+📚 **Recommended Courses:**
+1. **Title:** [Course Name]
+   - **Description:** [Course description]
+   - **URL:** [Full course URL]
+   - **Platform:** [Platform name]
+
+2. **Title:** [Course Name]
+   - **Description:** [Course description]
+   - **URL:** [Full course URL]
+   - **Platform:** [Platform name]
+
+3. **Title:** [Course Name]
+   - **Description:** [Course description]
+   - **URL:** [Full course URL]
+   - **Platform:** [Platform name]
+
+Important Notes:
+- Do NOT include any additional text before or after this format
+- Use clean URLs without markdown formatting
+- List exactly 3 courses
+- Keep all information within the specified sections"""
+
+            logger.info(f"Full prompt: {full_prompt}")
+
+            # Get response from DeepSeek
+            deepseek_response = self.get_deepseek_response(full_prompt)
+            if isinstance(deepseek_response, dict) and "error" in deepseek_response:
+                return Response(deepseek_response, status=500)
+
+            logger.info(f"Raw DeepSeek response: {deepseek_response}")
+
+            # Parse the response
+            career_advice, recommended_courses = self.parse_response(deepseek_response)
+            
+            # Save to history (in a transaction to prevent timeouts)
+            with transaction.atomic():
+                CareerAdviceHistory.objects.create(
+                    user=request.user,
+                    query=full_prompt,
+                    response=deepseek_response
+                )
+
+            response_data = {
+                "career_advice": career_advice,
+                "recommended_courses": recommended_courses
             }
-            for link in youtube_links
-        ]
+            
+            return Response(response_data, status=200)
 
-        # Save query and response
-        CareerAdviceHistory.objects.create(
-            user=request.user, query=full_prompt, response=response
-        )
-
-        return Response({
-            "career_advice": response,
-            "recommended_courses": youtube_courses
-        }, status=200)
+        except Exception as e:
+            logger.error(f"Error in CareerAdviceView: {str(e)}", exc_info=True)
+            return Response({"error": "An error occurred processing your request"}, status=500)
 
     def get_deepseek_response(self, user_input):
         API_KEY = os.getenv("DEEPSEEK_API_KEY")
-        API_URL = "https://api.deepseek.com/v1/chat/completions"
-
         if not API_KEY:
             logger.error("DeepSeek API key is not set")
             return {"error": "API key not configured"}
@@ -105,11 +134,11 @@ class CareerAdviceView(APIView):
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a career assistant. Generate structured career roadmaps based on the user's background and goals."
+                    "content": "You are a career advisor. Provide detailed career guidance following the EXACT format specified."
                 },
                 {
-                    "role": "user",
-                    "content": f"{user_input}\n\nFormat:\n1. Career Title\n📌 Description: [Summary]\n🗺 Career Roadmap:\n✅ Step 1\n✅ Step 2\n✅ Step 3\n📚 Recommended YouTube Courses (with links):"
+                    "role": "user", 
+                    "content": user_input
                 }
             ],
             "temperature": 0.7,
@@ -117,48 +146,118 @@ class CareerAdviceView(APIView):
         }
 
         try:
-            logger.debug(f"Sending request to DeepSeek API")
-            response = requests.post(API_URL, headers=headers, json=payload)
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30  # Add timeout
+            )
             response.raise_for_status()
             data = response.json()
-            logger.debug(f"DeepSeek raw response: {data}")
-
-            if "choices" not in data or not data["choices"]:
-                logger.error("No valid choices in DeepSeek response")
-                return {"error": "No valid choices returned by DeepSeek"}
-
-            content = data["choices"][0].get("message", {}).get("content", "No response generated")
-            return content or "No content in response"
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"DeepSeek request failed: {str(e)}")
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"DeepSeek API error: {str(e)}")
             return {"error": f"API request failed: {str(e)}"}
-        except ValueError as e:
-            logger.error(f"DeepSeek response parse failed: {str(e)}")
-            return {"error": "Invalid response format from API"}
 
-    def extract_youtube_links(self, text):
-        """
-        Extract all YouTube links from the response text.
-        """
-        youtube_regex = r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[^\s\)\]]+)'
-        return re.findall(youtube_regex, text)
+    def parse_response(self, text):
+        career_advice = {"title": "", "description": "", "roadmap": []}
+        recommended_courses = []
+        current_section = None
+        current_course = None
+        
+        # Normalize line endings and split
+        lines = text.replace('\r\n', '\n').split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Detect sections
+            if "**Career Title:**" in line:
+                current_section = "title"
+                career_advice["title"] = line.split("**Career Title:**", 1)[1].strip()
+                continue
+                
+            elif "📌 **Description:**" in line:
+                current_section = "description"
+                continue
+                
+            elif "🗺 **Career Roadmap:**" in line:
+                current_section = "roadmap"
+                continue
+                
+            elif "📚 **Recommended Courses:**" in line:
+                current_section = "courses"
+                continue
+
+            # Parse content based on current section
+            if current_section == "description":
+                if not career_advice["description"]:
+                    career_advice["description"] = line
+                else:
+                    career_advice["description"] += "\n" + line
+                    
+            elif current_section == "roadmap":
+                if line.startswith("✅ **Step"):
+                    step = line.split(":", 1)[1].strip() if ":" in line else line.replace("✅", "").strip()
+                    career_advice["roadmap"].append(step)
+                    
+            elif current_section == "courses":
+                # New course
+                if line[0].isdigit() and "**Title:**" in line:
+                    if current_course:  # Save previous course if exists
+                        recommended_courses.append(current_course)
+                    title = line.split("**Title:**", 1)[1].strip()
+                    current_course = {
+                        "title": title,
+                        "description": "",
+                        "url": "",
+                        "platform": ""
+                    }
+                
+                # Course details
+                elif current_course:
+                    if "**Description:**" in line:
+                        current_course["description"] = line.split("**Description:**", 1)[1].strip()
+                    elif "**URL:**" in line:
+                        url = line.split("**URL:**", 1)[1].strip()
+                        # Clean markdown links if present
+                        if "[" in url and "](" in url:
+                            url = url.split("](", 1)[1].rstrip(")")
+                        current_course["url"] = url
+                        
+                        # Add thumbnail for YouTube
+                        if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+                            current_course["thumbnail"] = self.get_youtube_thumbnail(url)
+                            
+                    elif "**Platform:**" in line:
+                        current_course["platform"] = line.split("**Platform:**", 1)[1].strip()
+
+        # Add the last course if it exists
+        if current_course:
+            recommended_courses.append(current_course)
+
+        # Clean up description
+        career_advice["description"] = career_advice["description"].strip()
+        
+        return career_advice, recommended_courses
 
     def get_youtube_thumbnail(self, video_url):
-        """
-        Generate thumbnail URL for a given YouTube video.
-        """
-        parsed_url = urlparse(video_url)
-        video_id = parse_qs(parsed_url.query).get('v')
-
-        if video_id:
-            video_id = video_id[0]
-        else:
-            # Handle youtu.be short URLs
-            video_id = parsed_url.path.strip("/")
-
-        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-
+        try:
+            parsed_url = urlparse(video_url)
+            if 'youtube.com' in parsed_url.netloc:
+                video_id = parse_qs(parsed_url.query).get('v', [''])[0]
+            elif 'youtu.be' in parsed_url.netloc:
+                video_id = parsed_url.path[1:]
+            else:
+                return ""
+                
+            if video_id:
+                return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            return ""
+        except Exception:
+            return ""
 
 
 class CareerHistoryView(generics.ListAPIView):
