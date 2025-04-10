@@ -48,58 +48,52 @@ class CareerAdviceView(APIView):
             if not user_input and not dropdowns:
                 return Response({"error": "Input or dropdowns are required"}, status=400)
 
-            # Improved prompt with more explicit formatting instructions
             full_prompt = f"""
-User Request: {user_input}
-Dropdown Selections: {dropdowns}
+User Input: {user_input}
 
-Please provide detailed career advice in this EXACT format:
+Provide detailed career advice for exactly 3 career paths based on the user's input. Use this EXACT format for each career path:
 
-**Career Title:** [Job Title Here]
+**Career Title:** [Job Title]
 
-📌 **Description:** 
-[Detailed 2-3 paragraph description of this career path]
+📌 **Description:**
+[2-3 paragraph description]
 
 🗺 **Career Roadmap:**
-✅ **Step 1:** [Step description]
-✅ **Step 2:** [Step description] 
-✅ **Step 3:** [Step description]
+1. [Detailed step 1]
+2. [Detailed step 2]
+3. [Detailed step 3]
 
 📚 **Recommended Courses:**
-1. **Title:** [Course Name]
-   - **Description:** [Course description]
-   - **URL:** [Full course URL]
-   - **Platform:** [Platform name]
+1. **Title:** [Course 1]
+   - **Description:** [Description]
+   - **URL:** [Direct URL]
+   - **Platform:** [Platform]
 
-2. **Title:** [Course Name]
-   - **Description:** [Course description]
-   - **URL:** [Full course URL]
-   - **Platform:** [Platform name]
+2. **Title:** [Course 2]
+   - **Description:** [Description]
+   - **URL:** [Direct URL]
+   - **Platform:** [Platform]
 
-3. **Title:** [Course Name]
-   - **Description:** [Course description]
-   - **URL:** [Full course URL]
-   - **Platform:** [Platform name]
+3. **Title:** [Course 3]
+   - **Description:** [Description]
+   - **URL:** [Direct URL]
+   - **Platform:** [Platform]
 
-Important Notes:
-- Do NOT include any additional text before or after this format
-- Use clean URLs without markdown formatting
-- List exactly 3 courses
-- Keep all information within the specified sections"""
-
+Important:
+- Only include the 3 career paths in this format
+- Use plain URLs without markdown
+- No additional text before or after
+"""
             logger.info(f"Full prompt: {full_prompt}")
 
-            # Get response from DeepSeek
             deepseek_response = self.get_deepseek_response(full_prompt)
             if isinstance(deepseek_response, dict) and "error" in deepseek_response:
                 return Response(deepseek_response, status=500)
 
             logger.info(f"Raw DeepSeek response: {deepseek_response}")
 
-            # Parse the response
             career_advice, recommended_courses = self.parse_response(deepseek_response)
-            
-            # Save to history (in a transaction to prevent timeouts)
+
             with transaction.atomic():
                 CareerAdviceHistory.objects.create(
                     user=request.user,
@@ -107,12 +101,10 @@ Important Notes:
                     response=deepseek_response
                 )
 
-            response_data = {
+            return Response({
                 "career_advice": career_advice,
                 "recommended_courses": recommended_courses
-            }
-            
-            return Response(response_data, status=200)
+            }, status=200)
 
         except Exception as e:
             logger.error(f"Error in CareerAdviceView: {str(e)}", exc_info=True)
@@ -132,132 +124,123 @@ Important Notes:
         payload = {
             "model": "deepseek-chat",
             "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a career advisor. Provide detailed career guidance following the EXACT format specified."
-                },
-                {
-                    "role": "user", 
-                    "content": user_input
-                }
+                {"role": "system", "content": "You are a career advisor. Provide concise career guidance in the exact format specified."},
+                {"role": "user", "content": user_input}
             ],
             "temperature": 0.7,
-            "max_tokens": 1500
+            "max_tokens": 3000  # Kept your value
         }
 
         try:
-            response = requests.post(
+            session = requests.Session()
+            response = session.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30  # Add timeout
+                timeout=(10, 90)  # Kept your value
             )
             response.raise_for_status()
             data = response.json()
+            logger.info(f"DeepSeek response: {data}")
             return data["choices"][0]["message"]["content"]
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            logger.error("DeepSeek API request timed out")
+            return {"error": "API request timed out"}
+        except requests.exceptions.RequestException as e:
             logger.error(f"DeepSeek API error: {str(e)}")
             return {"error": f"API request failed: {str(e)}"}
 
     def parse_response(self, text):
-        career_advice = {"title": "", "description": "", "roadmap": []}
+        career_advice = []
         recommended_courses = []
-        current_section = None
-        current_course = None
-        
-        # Normalize line endings and split
-        lines = text.replace('\r\n', '\n').split('\n')
-        
-        for line in lines:
-            line = line.strip()
+        lines = text.split('\n')
+        i = 0
+
+        while i < len(lines):
+            line = lines[i].strip()
             if not line:
+                i += 1
                 continue
 
-            # Detect sections
-            if "**Career Title:**" in line:
-                current_section = "title"
-                career_advice["title"] = line.split("**Career Title:**", 1)[1].strip()
-                continue
-                
-            elif "📌 **Description:**" in line:
-                current_section = "description"
-                continue
-                
-            elif "🗺 **Career Roadmap:**" in line:
-                current_section = "roadmap"
-                continue
-                
-            elif "📚 **Recommended Courses:**" in line:
-                current_section = "courses"
-                continue
+            # Career Title
+            if line.startswith('**Career Title:**'):
+                current_path = {'title': line.split('**Career Title:**')[1].strip(), 'description': '', 'roadmap': []}
+                current_courses = []
+                i += 1
 
-            # Parse content based on current section
-            if current_section == "description":
-                if not career_advice["description"]:
-                    career_advice["description"] = line
-                else:
-                    career_advice["description"] += "\n" + line
-                    
-            elif current_section == "roadmap":
-                if line.startswith("✅ **Step"):
-                    step = line.split(":", 1)[1].strip() if ":" in line else line.replace("✅", "").strip()
-                    career_advice["roadmap"].append(step)
-                    
-            elif current_section == "courses":
-                # New course
-                if line[0].isdigit() and "**Title:**" in line:
-                    if current_course:  # Save previous course if exists
-                        recommended_courses.append(current_course)
-                    title = line.split("**Title:**", 1)[1].strip()
-                    current_course = {
-                        "title": title,
-                        "description": "",
-                        "url": "",
-                        "platform": ""
-                    }
-                
-                # Course details
-                elif current_course:
-                    if "**Description:**" in line:
-                        current_course["description"] = line.split("**Description:**", 1)[1].strip()
-                    elif "**URL:**" in line:
-                        url = line.split("**URL:**", 1)[1].strip()
-                        # Clean markdown links if present
-                        if "[" in url and "](" in url:
-                            url = url.split("](", 1)[1].rstrip(")")
-                        current_course["url"] = url
-                        
-                        # Add thumbnail for YouTube
-                        if "youtube.com" in url.lower() or "youtu.be" in url.lower():
-                            current_course["thumbnail"] = self.get_youtube_thumbnail(url)
-                            
-                    elif "**Platform:**" in line:
-                        current_course["platform"] = line.split("**Platform:**", 1)[1].strip()
+            # Description
+            elif line.startswith('📌 **Description:**') and 'current_path' in locals():
+                desc_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].startswith('🗺 **Career Roadmap:**'):
+                    if lines[i].strip():
+                        desc_lines.append(lines[i].strip())
+                    i += 1
+                current_path['description'] = ' '.join(desc_lines)
 
-        # Add the last course if it exists
-        if current_course:
-            recommended_courses.append(current_course)
+            # Roadmap
+            elif line.startswith('🗺 **Career Roadmap:**') and 'current_path' in locals():
+                roadmap_steps = []
+                i += 1
+                while i < len(lines) and not lines[i].startswith('📚 **Recommended Courses:**'):
+                    step_line = lines[i].strip()
+                    if step_line and step_line[0].isdigit() and step_line[1] == '.':
+                        roadmap_steps.append(step_line.split('.', 1)[1].strip())
+                    i += 1
+                current_path['roadmap'] = roadmap_steps[:3]  # Limit to 3 steps
 
-        # Clean up description
-        career_advice["description"] = career_advice["description"].strip()
-        
+            # Courses
+            elif line.startswith('📚 **Recommended Courses:**') and 'current_path' in locals():
+                i += 1
+                current_course = None
+                while i < len(lines) and (not lines[i].startswith('**Career Title:**') and lines[i].strip() != '---'):
+                    line = lines[i].strip()
+                    if not line:
+                        i += 1
+                        continue
+                    if line[0].isdigit() and '**Title:**' in line:
+                        if current_course:
+                            current_courses.append(current_course)
+                        current_course = {
+                            'title': line.split('**Title:**')[1].strip(),
+                            'description': '',
+                            'url': '',
+                            'platform': ''
+                        }
+                    elif current_course and line.startswith('- **Description:**'):
+                        current_course['description'] = line.split('**Description:**')[1].strip()
+                    elif current_course and line.startswith('- **URL:**'):
+                        url = line.split('**URL:**')[1].strip()
+                        current_course['url'] = url
+                        if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+                            current_course['thumbnail'] = self.get_youtube_thumbnail(url)
+                    elif current_course and line.startswith('- **Platform:**'):
+                        current_course['platform'] = line.split('**Platform:**')[1].strip()
+                    i += 1
+                if current_course:
+                    current_courses.append(current_course)
+                career_advice.append(current_path)
+                recommended_courses.append(current_courses)
+
+            else:
+                i += 1
+
+        logger.info(f"Parsed career_advice: {career_advice}")
+        logger.info(f"Parsed recommended_courses: {recommended_courses}")
         return career_advice, recommended_courses
 
-    def get_youtube_thumbnail(self, video_url):
+    def get_youtube_thumbnail(self, url):
         try:
-            parsed_url = urlparse(video_url)
-            if 'youtube.com' in parsed_url.netloc:
-                video_id = parse_qs(parsed_url.query).get('v', [''])[0]
-            elif 'youtu.be' in parsed_url.netloc:
-                video_id = parsed_url.path[1:]
-            else:
-                return ""
-                
+            video_id = None
+            if 'youtube.com/watch' in url:
+                video_id = url.split('v=')[1].split('&')[0]
+            elif 'youtu.be' in url:
+                video_id = url.split('/')[-1].split('?')[0]
             if video_id:
-                return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-            return ""
+                return f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg'
         except Exception:
-            return ""
+            pass
+        return ''
 
 
 class CareerHistoryView(generics.ListAPIView):
