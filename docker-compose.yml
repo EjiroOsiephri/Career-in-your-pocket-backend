@@ -5,23 +5,21 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    # Add these health checks
-
-    # Add resource limits
+    # 👇 Add these new settings
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 1G
-    # Optimized command
+          memory: 1.5G # Increase memory limit
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+    # 👇 Replace your current command with this:
     command: >
-      gunicorn --timeout 120
-      --workers 4
-      --threads 2
-      --worker-class gthread
+      gunicorn
+      --timeout 180          # 3 min timeout (was 4360)
+      --workers 2            # Reduce workers (was 3)
+      --threads 2            # Add threads
+      --worker-class gthread # Better for I/O
       --bind 0.0.0.0:8000
-      --max-requests 1000
-      --max-requests-jitter 50
-      --access-logfile -
-      --error-logfile -
+      --max-requests 500     # Auto-restart workers
+      --preload              # Load app before forking
       core.wsgi:application

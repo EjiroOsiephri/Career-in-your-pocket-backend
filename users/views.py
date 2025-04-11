@@ -18,6 +18,7 @@ from django.core.mail import send_mail
 
 import requests
 from urllib.parse import urlparse, parse_qs
+import json
 
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -128,7 +129,7 @@ Important:
                 {"role": "user", "content": user_input}
             ],
             "temperature": 0.7,
-            "max_tokens": 3000  # Kept your value
+            "max_tokens": 2000  # Kept your value
         }
 
         try:
@@ -137,18 +138,26 @@ Important:
                 "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=(10, 90)  # Kept your value
+                timeout=(10, 60),
+                stream=True  # Kept your value
             )
             response.raise_for_status()
-            data = response.json()
-            logger.info(f"DeepSeek response: {data}")
+
+            content = []
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    content.append(chunk.decode('utf-8'))
+            
+            data = json.loads("".join(content))
             return data["choices"][0]["message"]["content"]
+
+            
         except requests.exceptions.Timeout:
-            logger.error("DeepSeek API request timed out")
-            return {"error": "API request timed out"}
-        except requests.exceptions.RequestException as e:
-            logger.error(f"DeepSeek API error: {str(e)}")
-            return {"error": f"API request failed: {str(e)}"}
+          logger.error("DeepSeek API timeout after 60s")
+          return {"error": "API request timed out"}
+        except Exception as e:
+          logger.error(f"DeepSeek API error: {str(e)}")
+          return {"error": str(e)}
 
     def parse_response(self, text):
         career_advice = []
@@ -468,3 +477,6 @@ class DeleteAccountView(generics.DestroyAPIView):
         logger.info(f"User deleted account: {user.email}")
         user.delete()
         return Response({"message": "Account deleted successfully"}, status=200)
+
+def health_check(request):
+    return JsonResponse({"status": "ok"})
