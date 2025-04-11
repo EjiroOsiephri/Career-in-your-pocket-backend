@@ -6,4 +6,4 @@ services:
     env_file:
       - .env
     depends_on: []
-    command: gunicorn --timeout 180 --workers 3 --bind 0.0.0.0:8000 core.wsgi:application
+    command: gunicorn --timeout 360 --workers 3 --bind 0.0.0.0:8000 core.wsgi:application
