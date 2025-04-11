@@ -48,11 +48,14 @@ INSTALLED_APPS = [
     "users",
 ]
 
-# CORS settings (Allow frontend to access API)
+
+
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS",
-    "http://localhost:3000,https://your-frontend.onrender.com"  # Update with your frontend domain
+    "http://localhost:3000,https://career-in-your-pocket-dev.vercel.app"
 ).split(",")
+
+
 CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL", "False") == "True"
 CORS_ALLOW_CREDENTIALS = True  # Allow frontend to send cookies/auth headers
 
