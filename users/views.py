@@ -250,6 +250,84 @@ class CareerHistoryView(generics.ListAPIView):
     def get_queryset(self):
         return CareerAdviceHistory.objects.filter(user=self.request.user).order_by("-created_at")
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        parsed_data = []
+        for item in queryset:
+            career_advice, recommended_courses = self.parse_response(item.response)
+            parsed_data.append({
+                "id": item.id,
+                "created_at": item.created_at,
+                "query": item.query,
+                "career_advice": career_advice,
+                "recommended_courses": recommended_courses
+            })
+        return Response(parsed_data)
+
+    def parse_response(self, text):
+        # Reuse the parse_response method from CareerAdviceView
+        career_advice = []
+        recommended_courses = []
+        lines = text.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                i += 1
+                continue
+            if line.startswith('**Career Title:**'):
+                current_path = {'title': line.split('**Career Title:**')[1].strip(), 'description': '', 'roadmap': []}
+                current_courses = []
+                i += 1
+            elif line.startswith('📌 **Description:**') and 'current_path' in locals():
+                desc_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].startswith('🗺 **Career Roadmap:**'):
+                    if lines[i].strip():
+                        desc_lines.append(lines[i].strip())
+                    i += 1
+                current_path['description'] = ' '.join(desc_lines)
+            elif line.startswith('🗺 **Career Roadmap:**') and 'current_path' in locals():
+                roadmap_steps = []
+                i += 1
+                while i < len(lines) and not lines[i].startswith('📚 **Recommended Courses:**'):
+                    step_line = lines[i].strip()
+                    if step_line and step_line[0].isdigit() and step_line[1] == '.':
+                        roadmap_steps.append(step_line.split('.', 1)[1].strip())
+                    i += 1
+                current_path['roadmap'] = roadmap_steps[:3]
+            elif line.startswith('📚 **Recommended Courses:**') and 'current_path' in locals():
+                i += 1
+                current_course = None
+                while i < len(lines) and (not lines[i].startswith('**Career Title:**') and lines[i].strip() != '---'):
+                    line = lines[i].strip()
+                    if not line:
+                        i += 1
+                        continue
+                    if line[0].isdigit() and '**Title:**' in line:
+                        if current_course:
+                            current_courses.append(current_course)
+                        current_course = {
+                            'title': line.split('**Title:**')[1].strip(),
+                            'description': '',
+                            'url': '',
+                            'platform': ''
+                        }
+                    elif current_course and line.startswith('- **Description:**'):
+                        current_course['description'] = line.split('**Description:**')[1].strip()
+                    elif current_course and line.startswith('- **URL:**'):
+                        current_course['url'] = line.split('**URL:**')[1].strip()
+                    elif current_course and line.startswith('- **Platform:**'):
+                        current_course['platform'] = line.split('**Platform:**')[1].strip()
+                    i += 1
+                if current_course:
+                    current_courses.append(current_course)
+                career_advice.append(current_path)
+                recommended_courses.append(current_courses)
+            else:
+                i += 1
+        return career_advice, recommended_courses
+
 
 
 class SignupView(generics.CreateAPIView):
